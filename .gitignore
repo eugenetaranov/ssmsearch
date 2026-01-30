@@ -1,0 +1,29 @@
+# Binaries
+bin/
+ssmsearch
+*.exe
+
+# Build artifacts
+dist/
+
+# Test artifacts
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config with secrets
+ssmsearch.yaml
+ssmsearch.toml
+!configs/*.example.*
+
+# Logs
+*.log
