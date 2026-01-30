@@ -1,6 +1,6 @@
 # Binaries
 bin/
-ssmsearch
+/ssmsearch
 *.exe
 
 # Build artifacts
