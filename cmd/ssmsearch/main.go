@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -23,6 +24,7 @@ func main() {
 	listAll := flag.Bool("l", false, "list all SSM parameters")
 	search := flag.Bool("s", false, "search mode - terms as positional args")
 	refresh := flag.Bool("r", false, "refresh cache (use with -s)")
+	tree := flag.Bool("t", false, "display output as tree")
 	showVersion := flag.Bool("v", false, "show version and exit")
 
 	// AWS options
@@ -39,6 +41,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ssmsearch -s term1 term2  Search parameters matching all terms\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -s -r term      Refresh cache and search\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -r              Refresh cache only\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -t              Tree view of all parameters\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -t -p /app/     Tree view under /app/\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -t -s term      Tree view of search results\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -v              Show version\n")
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
 		flag.PrintDefaults()
@@ -63,7 +68,7 @@ func main() {
 	}
 
 	// Show help if no command specified
-	if !*listAll && !*search && !*refresh {
+	if !*listAll && !*search && !*refresh && !*tree {
 		flag.Usage()
 		os.Exit(0)
 	}
@@ -92,12 +97,20 @@ func main() {
 	var params []ssm.Parameter
 
 	switch {
+	case *tree && !*search:
+		params, err = client.ListParameters(ctx, ssm.ListOptions{
+			Path:      *path,
+			Recursive: true,
+			Decrypt:   false, // tree only shows names
+		})
 	case *listAll:
 		params, err = client.ListParameters(ctx, ssm.ListOptions{
 			Path:      *path,
 			Recursive: true,
-			Decrypt:   *decrypt,
+			Decrypt:   false, // list only shows names
 		})
+	case *tree && *search:
+		params, err = searchKeysOnly(ctx, client, searchTerms, *path, *refresh)
 	case *search:
 		params, err = searchWithCache(ctx, client, searchTerms, *path, *refresh, *decrypt)
 	case *refresh:
@@ -109,9 +122,93 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Output params, one per line: name value
+	// Output params
+	if *tree {
+		printTree(params, *path)
+	} else if *listAll {
+		for _, p := range params {
+			fmt.Println(p.Name)
+		}
+	} else {
+		for _, p := range params {
+			fmt.Printf("%s %s\n", p.Name, p.Value)
+		}
+	}
+}
+
+type treeNode struct {
+	children map[string]*treeNode
+}
+
+func buildTree(params []ssm.Parameter, prefix string) *treeNode {
+	root := &treeNode{children: make(map[string]*treeNode)}
+
 	for _, p := range params {
-		fmt.Printf("%s %s\n", p.Name, p.Value)
+		// Strip prefix for cleaner display
+		path := strings.TrimPrefix(p.Name, prefix)
+		path = strings.TrimPrefix(path, "/")
+		parts := strings.Split(path, "/")
+
+		node := root
+		for _, part := range parts {
+			if node.children[part] == nil {
+				node.children[part] = &treeNode{
+					children: make(map[string]*treeNode),
+				}
+			}
+			node = node.children[part]
+		}
+	}
+	return root
+}
+
+func printTree(params []ssm.Parameter, prefix string) {
+	if len(params) == 0 {
+		return
+	}
+
+	root := buildTree(params, prefix)
+
+	// Print prefix as root
+	if prefix != "/" {
+		fmt.Println(prefix)
+	} else {
+		fmt.Println("/")
+	}
+
+	printNode(root, "")
+}
+
+func printNode(node *treeNode, indent string) {
+	// Get sorted children names
+	names := make([]string, 0, len(node.children))
+	for name := range node.children {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for i, name := range names {
+		child := node.children[name]
+		isLast := i == len(names)-1
+
+		// Print branch
+		if isLast {
+			fmt.Print(indent + "└── ")
+		} else {
+			fmt.Print(indent + "├── ")
+		}
+
+		// Print name
+		fmt.Println(name)
+
+		// Recurse with updated indent
+		newIndent := indent
+		if isLast {
+			newIndent += "    "
+		} else {
+			newIndent += "│   "
+		}
+		printNode(child, newIndent)
 	}
 }
 
@@ -225,6 +322,78 @@ func searchWithCache(ctx context.Context, client ssm.Client, terms []string, pat
 
 	// Fetch values for matched keys
 	return client.GetParameters(ctx, matchedKeys, decrypt)
+}
+
+func searchKeysOnly(ctx context.Context, client ssm.Client, terms []string, pathPrefix string, refresh bool) ([]ssm.Parameter, error) {
+	// Get account ID for cache file
+	accountID, err := client.GetAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize cache
+	c, err := cache.New()
+	if err != nil {
+		return nil, err
+	}
+
+	var keys []string
+
+	// Refresh: delete existing cache
+	if refresh {
+		if err := c.Remove(accountID); err != nil {
+			return nil, err
+		}
+	}
+
+	// Load from cache or fetch from AWS
+	if !refresh && c.Exists(accountID) {
+		keys, err = c.Load(accountID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Fetch all parameter names from AWS
+		allParams, err := client.ListParameters(ctx, ssm.ListOptions{
+			Path:      "/",
+			Recursive: true,
+			Decrypt:   false,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		keys = make([]string, len(allParams))
+		for i, p := range allParams {
+			keys[i] = p.Name
+		}
+
+		// Save to cache
+		if err := c.Save(accountID, keys); err != nil {
+			return nil, err
+		}
+	}
+
+	// Filter by path prefix
+	if pathPrefix != "/" {
+		var prefixedKeys []string
+		for _, k := range keys {
+			if strings.HasPrefix(k, pathPrefix) {
+				prefixedKeys = append(prefixedKeys, k)
+			}
+		}
+		keys = prefixedKeys
+	}
+
+	// Filter keys by search terms
+	matchedKeys := fuzzyFilterKeys(keys, terms)
+
+	// Return as Parameters with only Name set (no value fetch)
+	params := make([]ssm.Parameter, len(matchedKeys))
+	for i, k := range matchedKeys {
+		params[i] = ssm.Parameter{Name: k}
+	}
+	return params, nil
 }
 
 // fuzzyFilterKeys filters parameter keys by fuzzy matching.
