@@ -572,31 +572,6 @@ func fuzzyFilterKeys(keys []string, patterns []string) []string {
 	return result
 }
 
-// fuzzyFilter filters parameters by fuzzy matching on name or value.
-// All patterns must match (AND logic).
-func fuzzyFilter(params []ssm.Parameter, patterns []string) []ssm.Parameter {
-	var result []ssm.Parameter
-
-	for _, p := range params {
-		name := strings.ToLower(p.Name)
-		value := strings.ToLower(p.Value)
-
-		allMatch := true
-		for _, pattern := range patterns {
-			pattern = strings.ToLower(pattern)
-			if !fuzzyMatch(name, pattern) && !fuzzyMatch(value, pattern) {
-				allMatch = false
-				break
-			}
-		}
-		if allMatch {
-			result = append(result, p)
-		}
-	}
-
-	return result
-}
-
 // fuzzyMatch checks if text contains the pattern as a substring.
 func fuzzyMatch(text, pattern string) bool {
 	return pattern == "" || strings.Contains(text, pattern)
