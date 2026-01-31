@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
@@ -27,6 +28,8 @@ func main() {
 	refresh := flag.Bool("r", false, "refresh cache (use with -s)")
 	tree := flag.Bool("t", false, "display output as tree")
 	copyParam := flag.Bool("cp", false, "copy parameter: -cp src dest1 [dest2 ...]")
+	writeParam := flag.Bool("w", false, "write parameter: -w /path [value]")
+	yes := flag.Bool("y", false, "skip confirmation prompt (use with -w or -cp)")
 	showVersion := flag.Bool("v", false, "show version and exit")
 
 	// AWS options
@@ -47,6 +50,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -p /app/     Tree view under /app/\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -s term      Tree view of search results\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -cp src dest    Copy parameter value from src to dest\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -w /path value  Write/update parameter value\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -v              Show version\n")
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
 		flag.PrintDefaults()
@@ -76,14 +80,30 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: -cp requires source and at least one destination\n")
 			os.Exit(1)
 		}
-		if *listAll || *search || *refresh || *tree {
+		if *listAll || *search || *refresh || *tree || *writeParam {
 			fmt.Fprintf(os.Stderr, "Error: -cp cannot be used with other flags\n")
 			os.Exit(1)
 		}
 	}
 
+	// Validate write mode requires one or two args and no other flags
+	if *writeParam {
+		if len(searchTerms) < 1 || len(searchTerms) > 2 {
+			fmt.Fprintf(os.Stderr, "Error: -w requires parameter path and optional value\n")
+			os.Exit(1)
+		}
+		if !strings.HasPrefix(searchTerms[0], "/") {
+			fmt.Fprintf(os.Stderr, "Error: parameter path must start with /\n")
+			os.Exit(1)
+		}
+		if *listAll || *search || *refresh || *tree || *copyParam {
+			fmt.Fprintf(os.Stderr, "Error: -w cannot be used with other flags\n")
+			os.Exit(1)
+		}
+	}
+
 	// Show help if no command specified
-	if !*listAll && !*search && !*refresh && !*tree && !*copyParam {
+	if !*listAll && !*search && !*refresh && !*tree && !*copyParam && !*writeParam {
 		flag.Usage()
 		os.Exit(0)
 	}
@@ -112,6 +132,17 @@ func main() {
 	var params []ssm.Parameter
 
 	switch {
+	case *writeParam:
+		var valueArg string
+		if len(searchTerms) == 2 {
+			valueArg = searchTerms[1]
+		}
+		err = writeParameter(ctx, client, searchTerms[0], valueArg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	case *copyParam:
 		err = copyParameter(ctx, client, searchTerms[0], searchTerms[1:])
 		if err != nil {
@@ -266,6 +297,61 @@ func copyParameter(ctx context.Context, client ssm.Client, src string, dests []s
 		fmt.Printf("Copied %s -> %s\n", src, dest)
 	}
 
+	return nil
+}
+
+func writeParameter(ctx context.Context, client ssm.Client, path, valueArg string) error {
+	var valueStr string
+
+	if valueArg != "" {
+		// Use value from argument
+		valueStr = valueArg
+	} else {
+		// Read value from stdin until EOF
+		value, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading input: %w", err)
+		}
+		// Trim trailing newline for single-line values
+		valueStr = strings.TrimSuffix(string(value), "\n")
+	}
+
+	if valueStr == "" {
+		return fmt.Errorf("empty value provided")
+	}
+
+	// Check if parameter exists to preserve type
+	paramType := "String"
+	existing, err := client.GetParameters(ctx, []string{path}, false)
+	if err == nil && len(existing) > 0 {
+		paramType = existing[0].Type
+	}
+
+	// Open /dev/tty for confirmation (stdin may be consumed or we need interactive input)
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		return fmt.Errorf("cannot open terminal for confirmation: %w", err)
+	}
+	defer tty.Close()
+
+	fmt.Printf("Write to %s (%s)? [y/N] ", path, paramType)
+	reader := bufio.NewReader(tty)
+	answer, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer != "y" && answer != "yes" {
+		fmt.Println("Cancelled")
+		return nil
+	}
+
+	err = client.PutParameter(ctx, path, valueStr, paramType, true)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Wrote %s\n", path)
 	return nil
 }
 
