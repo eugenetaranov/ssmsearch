@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -25,6 +26,7 @@ func main() {
 	search := flag.Bool("s", false, "search mode - terms as positional args")
 	refresh := flag.Bool("r", false, "refresh cache (use with -s)")
 	tree := flag.Bool("t", false, "display output as tree")
+	copyParam := flag.Bool("cp", false, "copy parameter: -cp src dest1 [dest2 ...]")
 	showVersion := flag.Bool("v", false, "show version and exit")
 
 	// AWS options
@@ -44,6 +46,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t              Tree view of all parameters\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -p /app/     Tree view under /app/\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -s term      Tree view of search results\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -cp src dest    Copy parameter value from src to dest\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -v              Show version\n")
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
 		flag.PrintDefaults()
@@ -67,8 +70,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate copy mode requires at least 2 args and no other flags
+	if *copyParam {
+		if len(searchTerms) < 2 {
+			fmt.Fprintf(os.Stderr, "Error: -cp requires source and at least one destination\n")
+			os.Exit(1)
+		}
+		if *listAll || *search || *refresh || *tree {
+			fmt.Fprintf(os.Stderr, "Error: -cp cannot be used with other flags\n")
+			os.Exit(1)
+		}
+	}
+
 	// Show help if no command specified
-	if !*listAll && !*search && !*refresh && !*tree {
+	if !*listAll && !*search && !*refresh && !*tree && !*copyParam {
 		flag.Usage()
 		os.Exit(0)
 	}
@@ -97,6 +112,13 @@ func main() {
 	var params []ssm.Parameter
 
 	switch {
+	case *copyParam:
+		err = copyParameter(ctx, client, searchTerms[0], searchTerms[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	case *tree && !*search:
 		params, err = client.ListParameters(ctx, ssm.ListOptions{
 			Path:      *path,
@@ -210,6 +232,41 @@ func printNode(node *treeNode, indent string) {
 		}
 		printNode(child, newIndent)
 	}
+}
+
+func copyParameter(ctx context.Context, client ssm.Client, src string, dests []string) error {
+	// Get source parameter
+	params, err := client.GetParameters(ctx, []string{src}, true)
+	if err != nil {
+		return err
+	}
+	if len(params) == 0 {
+		return fmt.Errorf("source parameter not found: %s", src)
+	}
+
+	srcParam := params[0]
+	reader := bufio.NewReader(os.Stdin)
+
+	for _, dest := range dests {
+		fmt.Printf("Copy %s -> %s? [y/N] ", src, dest)
+		answer, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Printf("Skipped %s\n", dest)
+			continue
+		}
+
+		err = client.PutParameter(ctx, dest, srcParam.Value, srcParam.Type, true)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Copied %s -> %s\n", src, dest)
+	}
+
+	return nil
 }
 
 func refreshCache(ctx context.Context, client ssm.Client) error {

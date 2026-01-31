@@ -123,3 +123,18 @@ func (c *awsClient) GetParameters(ctx context.Context, names []string, decrypt b
 
 	return params, nil
 }
+
+func (c *awsClient) PutParameter(ctx context.Context, name, value, paramType string, overwrite bool) error {
+	input := &ssm.PutParameterInput{
+		Name:      aws.String(name),
+		Value:     aws.String(value),
+		Type:      types.ParameterType(paramType),
+		Overwrite: aws.Bool(overwrite),
+	}
+
+	_, err := c.svc.PutParameter(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to put parameter %s: %w", name, err)
+	}
+	return nil
+}

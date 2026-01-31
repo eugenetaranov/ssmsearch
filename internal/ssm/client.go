@@ -33,6 +33,7 @@ type Client interface {
 	ListParameters(ctx context.Context, opts ListOptions) ([]Parameter, error)
 	GetAccountID(ctx context.Context) (string, error)
 	GetParameters(ctx context.Context, names []string, decrypt bool) ([]Parameter, error)
+	PutParameter(ctx context.Context, name, value, paramType string, overwrite bool) error
 }
 
 // NewClient creates a new SSM client.
