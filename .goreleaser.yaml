@@ -1,0 +1,120 @@
+# GoReleaser configuration for ssmsearch
+# Documentation: https://goreleaser.com
+
+version: 2
+
+project_name: ssmsearch
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ssmsearch
+    binary: ssmsearch
+    main: ./cmd/ssmsearch
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.gitCommit={{.Commit}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: eugenetaranov
+    name: ssmsearch
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## ssmsearch {{ .Version }}
+
+    AWS SSM Parameter Store CLI tool.
+  footer: |
+    ## Installation
+
+    ### Homebrew (macOS/Linux)
+    ```bash
+    brew install eugenetaranov/tap/ssmsearch
+    ```
+
+    ### Direct Download
+    Download the appropriate binary for your platform from the assets below.
+
+    ### Build from Source
+    ```bash
+    go install github.com/eugenetaranov/ssmsearch/cmd/ssmsearch@{{ .Tag }}
+    ```
+
+# Homebrew Tap
+brews:
+  - name: ssmsearch
+    repository:
+      owner: eugenetaranov
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/eugenetaranov/ssmsearch"
+    description: "AWS SSM Parameter Store CLI with fuzzy search and caching"
+    license: "MIT"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    dependencies:
+      - name: go
+        type: optional
+    test: |
+      system "#{bin}/ssmsearch", "-v"
+    install: |
+      bin.install "ssmsearch"
+
+# Announce release (optional)
+announce:
+  skip: true
