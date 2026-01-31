@@ -137,14 +137,14 @@ func main() {
 		if len(searchTerms) == 2 {
 			valueArg = searchTerms[1]
 		}
-		err = writeParameter(ctx, client, searchTerms[0], valueArg)
+		err = writeParameter(ctx, client, searchTerms[0], valueArg, *yes)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
 	case *copyParam:
-		err = copyParameter(ctx, client, searchTerms[0], searchTerms[1:])
+		err = copyParameter(ctx, client, searchTerms[0], searchTerms[1:], *yes)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -265,7 +265,7 @@ func printNode(node *treeNode, indent string) {
 	}
 }
 
-func copyParameter(ctx context.Context, client ssm.Client, src string, dests []string) error {
+func copyParameter(ctx context.Context, client ssm.Client, src string, dests []string, skipConfirm bool) error {
 	// Get source parameter
 	params, err := client.GetParameters(ctx, []string{src}, true)
 	if err != nil {
@@ -276,18 +276,23 @@ func copyParameter(ctx context.Context, client ssm.Client, src string, dests []s
 	}
 
 	srcParam := params[0]
-	reader := bufio.NewReader(os.Stdin)
+	var reader *bufio.Reader
+	if !skipConfirm {
+		reader = bufio.NewReader(os.Stdin)
+	}
 
 	for _, dest := range dests {
-		fmt.Printf("Copy %s -> %s? [y/N] ", src, dest)
-		answer, err := reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		answer = strings.TrimSpace(strings.ToLower(answer))
-		if answer != "y" && answer != "yes" {
-			fmt.Printf("Skipped %s\n", dest)
-			continue
+		if !skipConfirm {
+			fmt.Printf("Copy %s -> %s? [y/N] ", src, dest)
+			answer, err := reader.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			answer = strings.TrimSpace(strings.ToLower(answer))
+			if answer != "y" && answer != "yes" {
+				fmt.Printf("Skipped %s\n", dest)
+				continue
+			}
 		}
 
 		err = client.PutParameter(ctx, dest, srcParam.Value, srcParam.Type, true)
@@ -300,7 +305,7 @@ func copyParameter(ctx context.Context, client ssm.Client, src string, dests []s
 	return nil
 }
 
-func writeParameter(ctx context.Context, client ssm.Client, path, valueArg string) error {
+func writeParameter(ctx context.Context, client ssm.Client, path, valueArg string, skipConfirm bool) error {
 	var valueStr string
 
 	if valueArg != "" {
@@ -327,23 +332,25 @@ func writeParameter(ctx context.Context, client ssm.Client, path, valueArg strin
 		paramType = existing[0].Type
 	}
 
-	// Open /dev/tty for confirmation (stdin may be consumed or we need interactive input)
-	tty, err := os.Open("/dev/tty")
-	if err != nil {
-		return fmt.Errorf("cannot open terminal for confirmation: %w", err)
-	}
-	defer tty.Close()
+	if !skipConfirm {
+		// Open /dev/tty for confirmation (stdin may be consumed or we need interactive input)
+		tty, err := os.Open("/dev/tty")
+		if err != nil {
+			return fmt.Errorf("cannot open terminal for confirmation: %w", err)
+		}
+		defer tty.Close()
 
-	fmt.Printf("Write to %s (%s)? [y/N] ", path, paramType)
-	reader := bufio.NewReader(tty)
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return err
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		fmt.Println("Cancelled")
-		return nil
+		fmt.Printf("Write to %s (%s)? [y/N] ", path, paramType)
+		reader := bufio.NewReader(tty)
+		answer, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Cancelled")
+			return nil
+		}
 	}
 
 	err = client.PutParameter(ctx, path, valueStr, paramType, true)
