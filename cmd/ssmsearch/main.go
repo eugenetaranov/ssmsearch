@@ -156,6 +156,8 @@ func main() {
 			Recursive: true,
 			Decrypt:   false, // tree only shows names
 		})
+	case *listAll && *search:
+		params, err = searchKeysOnly(ctx, client, searchTerms, *path, *refresh)
 	case *listAll:
 		params, err = client.ListParameters(ctx, ssm.ListOptions{
 			Path:      *path,
