@@ -51,6 +51,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -s term      Tree view of search results\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -cp src dest    Copy parameter value from src to dest\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -w /path value  Write/update parameter value\n")
+		fmt.Fprintf(os.Stderr, "  echo val | ssmsearch -w /path  Write value from stdin\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -v              Show version\n")
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
 		flag.PrintDefaults()
@@ -314,7 +315,11 @@ func writeParameter(ctx context.Context, client ssm.Client, path, valueArg strin
 		// Use value from argument
 		valueStr = valueArg
 	} else {
-		// Read value from stdin until EOF
+		// Read value from stdin (only if piped)
+		stat, _ := os.Stdin.Stat()
+		if (stat.Mode() & os.ModeCharDevice) != 0 {
+			return fmt.Errorf("no value provided; pass as argument or pipe via stdin")
+		}
 		value, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("reading input: %w", err)
