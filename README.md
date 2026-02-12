@@ -70,6 +70,7 @@ ssmsearch -s -r term   # refresh and search
 - **Tree view** - Hierarchical display of parameter paths
 - **Copy/write** - Manage parameters with confirmation prompts
 - **Multi-term AND** - All search terms must match
+- **No value caching** - Only parameter names are cached locally in `~/.ssmsearch/<account_id>.cache`; values are always fetched from AWS
 
 ## License
 
