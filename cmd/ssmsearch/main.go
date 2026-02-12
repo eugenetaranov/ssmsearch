@@ -51,6 +51,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -s term      Tree view of search results\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -cp src dest    Copy parameter value from src to dest\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -w /path value  Write/update parameter value\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -w /path        Prompt for value interactively\n")
 		fmt.Fprintf(os.Stderr, "  echo val | ssmsearch -w /path  Write value from stdin\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -v              Show version\n")
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
@@ -309,29 +310,6 @@ func copyParameter(ctx context.Context, client ssm.Client, src string, dests []s
 }
 
 func writeParameter(ctx context.Context, client ssm.Client, path, valueArg string, skipConfirm bool) error {
-	var valueStr string
-
-	if valueArg != "" {
-		// Use value from argument
-		valueStr = valueArg
-	} else {
-		// Read value from stdin (only if piped)
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) != 0 {
-			return fmt.Errorf("no value provided; pass as argument or pipe via stdin")
-		}
-		value, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading input: %w", err)
-		}
-		// Trim trailing newline for single-line values
-		valueStr = strings.TrimSuffix(string(value), "\n")
-	}
-
-	if valueStr == "" {
-		return fmt.Errorf("empty value provided")
-	}
-
 	// Check if parameter exists to preserve type
 	paramType := "String"
 	existing, err := client.GetParameters(ctx, []string{path}, false)
@@ -339,8 +317,44 @@ func writeParameter(ctx context.Context, client ssm.Client, path, valueArg strin
 		paramType = existing[0].Type
 	}
 
+	var valueStr string
+
+	if valueArg != "" {
+		// Use value from argument
+		valueStr = valueArg
+	} else {
+		// Check if stdin is piped
+		stat, _ := os.Stdin.Stat()
+		if (stat.Mode() & os.ModeCharDevice) == 0 {
+			// Read value from stdin pipe
+			value, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("reading input: %w", err)
+			}
+			valueStr = string(value)
+		} else {
+			// Interactive: prompt for value
+			tty, err := os.Open("/dev/tty")
+			if err != nil {
+				return fmt.Errorf("cannot open terminal: %w", err)
+			}
+			defer tty.Close()
+
+			fmt.Printf("Enter value for %s (%s) — press Ctrl+D when done:\n", path, paramType)
+			value, err := io.ReadAll(tty)
+			if err != nil {
+				return fmt.Errorf("reading input: %w", err)
+			}
+			valueStr = string(value)
+		}
+	}
+
+	valueStr = strings.TrimSpace(valueStr)
+	if valueStr == "" {
+		return fmt.Errorf("empty value provided")
+	}
+
 	if !skipConfirm {
-		// Open /dev/tty for confirmation (stdin may be consumed or we need interactive input)
 		tty, err := os.Open("/dev/tty")
 		if err != nil {
 			return fmt.Errorf("cannot open terminal for confirmation: %w", err)
