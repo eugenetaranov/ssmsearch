@@ -27,6 +27,7 @@ func main() {
 	search := flag.Bool("s", false, "search mode - terms as positional args")
 	refresh := flag.Bool("r", false, "refresh cache (use with -s)")
 	tree := flag.Bool("t", false, "display output as tree")
+	getParam := flag.Bool("g", false, "get single parameter value: -g /path")
 	copyParam := flag.Bool("cp", false, "copy parameter: -cp src dest1 [dest2 ...]")
 	writeParam := flag.Bool("w", false, "write parameter: -w /path [value]")
 	yes := flag.Bool("y", false, "skip confirmation prompt (use with -w or -cp)")
@@ -49,6 +50,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t              Tree view of all parameters\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -p /app/     Tree view under /app/\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -t -s term      Tree view of search results\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -g /path        Get single parameter value (just the value)\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -cp src dest    Copy parameter value from src to dest\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -w /path value  Write/update parameter value\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -w /path        Prompt for value interactively\n")
@@ -74,6 +76,22 @@ func main() {
 	if *search && len(searchTerms) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: -s requires at least one search term\n")
 		os.Exit(1)
+	}
+
+	// Validate get mode requires exactly 1 arg and no other flags
+	if *getParam {
+		if len(searchTerms) != 1 {
+			fmt.Fprintf(os.Stderr, "Error: -g requires exactly one parameter path\n")
+			os.Exit(1)
+		}
+		if !strings.HasPrefix(searchTerms[0], "/") {
+			fmt.Fprintf(os.Stderr, "Error: parameter path must start with /\n")
+			os.Exit(1)
+		}
+		if *listAll || *search || *refresh || *tree || *copyParam || *writeParam {
+			fmt.Fprintf(os.Stderr, "Error: -g cannot be used with other flags\n")
+			os.Exit(1)
+		}
 	}
 
 	// Validate copy mode requires at least 2 args and no other flags
@@ -105,7 +123,7 @@ func main() {
 	}
 
 	// Show help if no command specified
-	if !*listAll && !*search && !*refresh && !*tree && !*copyParam && !*writeParam {
+	if !*listAll && !*search && !*refresh && !*tree && !*copyParam && !*writeParam && !*getParam {
 		flag.Usage()
 		os.Exit(0)
 	}
@@ -134,6 +152,18 @@ func main() {
 	var params []ssm.Parameter
 
 	switch {
+	case *getParam:
+		params, err := client.GetParameters(ctx, []string{searchTerms[0]}, *decrypt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(params) == 0 {
+			fmt.Fprintf(os.Stderr, "Error: parameter not found: %s\n", searchTerms[0])
+			os.Exit(1)
+		}
+		fmt.Print(params[0].Value)
+		os.Exit(0)
 	case *writeParam:
 		var valueArg string
 		if len(searchTerms) == 2 {
