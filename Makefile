@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint fmt deps release release-dry-run release-snapshot release-check
+.PHONY: build install clean test lint fmt deps release upgrade-local release-dry-run release-snapshot release-check
 
 BINARY := ssmsearch
 BUILD_DIR := bin
@@ -56,6 +56,32 @@ release:
 		git tag -a $(TAG) -m "Release $(TAG)" && \
 		git push origin $(TAG) && \
 		echo "Release $(TAG) pushed. GitHub Actions will build and publish artifacts."; \
+	fi
+
+# Watch the GitHub Actions release run, then upgrade/install via Homebrew if available
+# Usage: make upgrade-local [TAG=v1.0.0]  (defaults to latest tag)
+BREW_FORMULA := eugenetaranov/tap/ssmsearch
+upgrade-local:
+	@TAG=$${TAG:-$$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1)}; \
+	if [ -z "$$TAG" ]; then echo "No release tag found"; exit 1; fi; \
+	echo "Waiting for release run for $$TAG..."; \
+	for i in $$(seq 1 30); do \
+		RUN_ID=$$(gh run list --workflow release.yaml --branch $$TAG --limit 1 --json databaseId --jq '.[0].databaseId'); \
+		[ -n "$$RUN_ID" ] && break; \
+		sleep 2; \
+	done; \
+	if [ -z "$$RUN_ID" ]; then echo "No release run found for $$TAG"; exit 1; fi; \
+	gh run watch $$RUN_ID --exit-status || exit 1; \
+	if command -v brew >/dev/null 2>&1; then \
+		brew update && \
+		if brew list --formula ssmsearch >/dev/null 2>&1; then \
+			brew upgrade $(BREW_FORMULA); \
+		else \
+			brew install $(BREW_FORMULA); \
+		fi && \
+		ssmsearch -v; \
+	else \
+		echo "brew not found, skipping install"; \
 	fi
 
 # GoReleaser: test release configuration without publishing
