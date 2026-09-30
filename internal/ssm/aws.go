@@ -64,6 +64,9 @@ func (c *awsClient) ListParameters(ctx context.Context, opts ListOptions) ([]Par
 		for _, p := range page.Parameters {
 			params = append(params, convertParameter(p))
 		}
+		if opts.Progress != nil {
+			opts.Progress(len(params))
+		}
 	}
 
 	return params, nil

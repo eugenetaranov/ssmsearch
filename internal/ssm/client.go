@@ -26,6 +26,8 @@ type ListOptions struct {
 	Path      string
 	Recursive bool
 	Decrypt   bool
+	// Progress, if set, is called after each page with the running total.
+	Progress func(count int)
 }
 
 // Client defines the interface for SSM operations.

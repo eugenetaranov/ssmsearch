@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"ssmsearch/internal/cache"
+	"ssmsearch/internal/spinner"
 	"ssmsearch/internal/ssm"
 )
 
@@ -153,7 +154,9 @@ func main() {
 
 	switch {
 	case *getParam:
+		sp := spinner.Start("Fetching " + searchTerms[0])
 		params, err := client.GetParameters(ctx, []string{searchTerms[0]}, *decrypt)
+		sp.Stop()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -183,19 +186,11 @@ func main() {
 		}
 		os.Exit(0)
 	case *tree && !*search:
-		params, err = client.ListParameters(ctx, ssm.ListOptions{
-			Path:      *path,
-			Recursive: true,
-			Decrypt:   false, // tree only shows names
-		})
+		params, err = listNames(ctx, client, *path)
 	case *listAll && *search:
 		params, err = searchKeysOnly(ctx, client, searchTerms, *path, *refresh)
 	case *listAll:
-		params, err = client.ListParameters(ctx, ssm.ListOptions{
-			Path:      *path,
-			Recursive: true,
-			Decrypt:   false, // list only shows names
-		})
+		params, err = listNames(ctx, client, *path)
 	case *tree && *search:
 		params, err = searchKeysOnly(ctx, client, searchTerms, *path, *refresh)
 	case *search:
@@ -301,7 +296,9 @@ func printNode(node *treeNode, indent string) {
 
 func copyParameter(ctx context.Context, client ssm.Client, src string, dests []string, skipConfirm bool) error {
 	// Get source parameter
+	sp := spinner.Start("Fetching " + src)
 	params, err := client.GetParameters(ctx, []string{src}, true)
+	sp.Stop()
 	if err != nil {
 		return err
 	}
@@ -329,7 +326,9 @@ func copyParameter(ctx context.Context, client ssm.Client, src string, dests []s
 			}
 		}
 
+		sp := spinner.Start("Writing " + dest)
 		err = client.PutParameter(ctx, dest, srcParam.Value, srcParam.Type, true)
+		sp.Stop()
 		if err != nil {
 			return err
 		}
@@ -342,7 +341,9 @@ func copyParameter(ctx context.Context, client ssm.Client, src string, dests []s
 func writeParameter(ctx context.Context, client ssm.Client, path, valueArg string, skipConfirm bool) error {
 	// Check if parameter exists to preserve type
 	paramType := "String"
+	sp := spinner.Start("Checking " + path)
 	existing, err := client.GetParameters(ctx, []string{path}, false)
+	sp.Stop()
 	if err == nil && len(existing) > 0 {
 		paramType = existing[0].Type
 	}
@@ -404,7 +405,9 @@ func writeParameter(ctx context.Context, client ssm.Client, path, valueArg strin
 		}
 	}
 
+	sp = spinner.Start("Writing " + path)
 	err = client.PutParameter(ctx, path, valueStr, paramType, true)
+	sp.Stop()
 	if err != nil {
 		return err
 	}
@@ -414,6 +417,9 @@ func writeParameter(ctx context.Context, client ssm.Client, path, valueArg strin
 }
 
 func refreshCache(ctx context.Context, client ssm.Client) error {
+	sp := spinner.Start("Resolving AWS account...")
+	defer sp.Stop()
+
 	accountID, err := client.GetAccountID(ctx)
 	if err != nil {
 		return err
@@ -429,19 +435,9 @@ func refreshCache(ctx context.Context, client ssm.Client) error {
 		return err
 	}
 
-	// Fetch all parameter names from AWS
-	allParams, err := client.ListParameters(ctx, ssm.ListOptions{
-		Path:      "/",
-		Recursive: true,
-		Decrypt:   false,
-	})
+	keys, err := fetchAllKeys(ctx, client, sp)
 	if err != nil {
 		return err
-	}
-
-	keys := make([]string, len(allParams))
-	for i, p := range allParams {
-		keys[i] = p.Name
 	}
 
 	// Save to cache
@@ -449,11 +445,15 @@ func refreshCache(ctx context.Context, client ssm.Client) error {
 		return err
 	}
 
+	sp.Stop()
 	fmt.Fprintf(os.Stderr, "Cache refreshed: %d parameters\n", len(keys))
 	return nil
 }
 
 func searchWithCache(ctx context.Context, client ssm.Client, terms []string, pathPrefix string, refresh, decrypt bool) ([]ssm.Parameter, error) {
+	sp := spinner.Start("Resolving AWS account...")
+	defer sp.Stop()
+
 	// Get account ID for cache file
 	accountID, err := client.GetAccountID(ctx)
 	if err != nil {
@@ -482,19 +482,9 @@ func searchWithCache(ctx context.Context, client ssm.Client, terms []string, pat
 			return nil, err
 		}
 	} else {
-		// Fetch all parameter names from AWS
-		allParams, err := client.ListParameters(ctx, ssm.ListOptions{
-			Path:      "/",
-			Recursive: true,
-			Decrypt:   false, // Don't decrypt, we only need names
-		})
+		keys, err = fetchAllKeys(ctx, client, sp)
 		if err != nil {
 			return nil, err
-		}
-
-		keys = make([]string, len(allParams))
-		for i, p := range allParams {
-			keys[i] = p.Name
 		}
 
 		// Save to cache
@@ -522,10 +512,52 @@ func searchWithCache(ctx context.Context, client ssm.Client, terms []string, pat
 	}
 
 	// Fetch values for matched keys
+	sp.Update(fmt.Sprintf("Fetching %d values...", len(matchedKeys)))
 	return client.GetParameters(ctx, matchedKeys, decrypt)
 }
 
+// fetchAllKeys lists every parameter name in the account, reporting progress on sp.
+func fetchAllKeys(ctx context.Context, client ssm.Client, sp *spinner.Spinner) ([]string, error) {
+	const msg = "Fetching parameter names..."
+	sp.Update(msg)
+	allParams, err := client.ListParameters(ctx, ssm.ListOptions{
+		Path:      "/",
+		Recursive: true,
+		Decrypt:   false, // Don't decrypt, we only need names
+		Progress: func(n int) {
+			sp.Update(fmt.Sprintf("%s %d", msg, n))
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, len(allParams))
+	for i, p := range allParams {
+		keys[i] = p.Name
+	}
+	return keys, nil
+}
+
+// listNames lists parameter names under path without values.
+func listNames(ctx context.Context, client ssm.Client, path string) ([]ssm.Parameter, error) {
+	const msg = "Listing parameters..."
+	sp := spinner.Start(msg)
+	defer sp.Stop()
+	return client.ListParameters(ctx, ssm.ListOptions{
+		Path:      path,
+		Recursive: true,
+		Decrypt:   false, // list/tree only show names
+		Progress: func(n int) {
+			sp.Update(fmt.Sprintf("%s %d", msg, n))
+		},
+	})
+}
+
 func searchKeysOnly(ctx context.Context, client ssm.Client, terms []string, pathPrefix string, refresh bool) ([]ssm.Parameter, error) {
+	sp := spinner.Start("Resolving AWS account...")
+	defer sp.Stop()
+
 	// Get account ID for cache file
 	accountID, err := client.GetAccountID(ctx)
 	if err != nil {
@@ -554,19 +586,9 @@ func searchKeysOnly(ctx context.Context, client ssm.Client, terms []string, path
 			return nil, err
 		}
 	} else {
-		// Fetch all parameter names from AWS
-		allParams, err := client.ListParameters(ctx, ssm.ListOptions{
-			Path:      "/",
-			Recursive: true,
-			Decrypt:   false,
-		})
+		keys, err = fetchAllKeys(ctx, client, sp)
 		if err != nil {
 			return nil, err
-		}
-
-		keys = make([]string, len(allParams))
-		for i, p := range allParams {
-			keys[i] = p.Name
 		}
 
 		// Save to cache
