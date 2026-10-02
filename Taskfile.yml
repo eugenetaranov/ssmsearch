@@ -13,6 +13,11 @@ vars:
     sh: git tag --sort=-version:refname 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true
 
 tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list
+
   build:
     desc: Build binary into bin/
     cmds:
