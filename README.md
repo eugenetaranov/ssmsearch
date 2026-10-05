@@ -18,6 +18,12 @@ go install github.com/eugenetaranov/ssmsearch/cmd/ssmsearch@latest
 ## Usage
 
 ```bash
+# Interactive search (TUI): live filter, value preview, enter prints the value
+ssmsearch
+ssmsearch prod db          # start with a filter
+ssmsearch -i -p /app/      # only keys under /app/
+value=$(ssmsearch prod db) # UI draws on stderr, chosen value goes to stdout
+
 # Search parameters (fuzzy match, all terms must match)
 ssmsearch -s prod database host
 
@@ -50,6 +56,7 @@ ssmsearch -s -r term   # refresh and search
 
 | Flag | Description |
 |------|-------------|
+| `-i` | Interactive search (default with no flags in a terminal) |
 | `-s` | Search mode - terms as positional args |
 | `-l` | List parameter names only (no values) |
 | `-t` | Display as tree |
@@ -65,6 +72,7 @@ ssmsearch -s -r term   # refresh and search
 
 ## Features
 
+- **Interactive TUI** - Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea): type to filter, ↑/↓ to move, enter prints the value, ctrl+y copies it, ctrl+r refreshes the cache
 - **Fuzzy search** - Match parameters by substring across name/value
 - **Local caching** - Fast repeated searches without API calls
 - **Tree view** - Hierarchical display of parameter paths

@@ -13,8 +13,10 @@ import (
 	"syscall"
 
 	"ssmsearch/internal/cache"
+	"ssmsearch/internal/search"
 	"ssmsearch/internal/spinner"
 	"ssmsearch/internal/ssm"
+	"ssmsearch/internal/tui"
 )
 
 var (
@@ -25,7 +27,8 @@ var (
 func main() {
 	// Simple CLI flags
 	listAll := flag.Bool("l", false, "list all SSM parameters")
-	search := flag.Bool("s", false, "search mode - terms as positional args")
+	interactive := flag.Bool("i", false, "interactive search (default when run with no flags in a terminal)")
+	searchMode := flag.Bool("s", false, "search mode - terms as positional args")
 	refresh := flag.Bool("r", false, "refresh cache (use with -s)")
 	tree := flag.Bool("t", false, "display output as tree")
 	getParam := flag.Bool("g", false, "get single parameter value: -g /path")
@@ -43,6 +46,7 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "ssmsearch - AWS SSM Parameter Store CLI\n\n")
 		fmt.Fprintf(os.Stderr, "Usage:\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch [terms]         Interactive search (also -i)\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -l              List all parameters\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -l -p /app/     List parameters under /app/\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -s term1 term2  Search parameters matching all terms\n")
@@ -74,7 +78,7 @@ func main() {
 	searchTerms := flag.Args()
 
 	// Validate search mode requires terms
-	if *search && len(searchTerms) == 0 {
+	if *searchMode && len(searchTerms) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: -s requires at least one search term\n")
 		os.Exit(1)
 	}
@@ -89,7 +93,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: parameter path must start with /\n")
 			os.Exit(1)
 		}
-		if *listAll || *search || *refresh || *tree || *copyParam || *writeParam {
+		if *listAll || *searchMode || *refresh || *tree || *copyParam || *writeParam {
 			fmt.Fprintf(os.Stderr, "Error: -g cannot be used with other flags\n")
 			os.Exit(1)
 		}
@@ -101,7 +105,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: -cp requires source and at least one destination\n")
 			os.Exit(1)
 		}
-		if *listAll || *search || *refresh || *tree || *writeParam {
+		if *listAll || *searchMode || *refresh || *tree || *writeParam {
 			fmt.Fprintf(os.Stderr, "Error: -cp cannot be used with other flags\n")
 			os.Exit(1)
 		}
@@ -117,16 +121,22 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: parameter path must start with /\n")
 			os.Exit(1)
 		}
-		if *listAll || *search || *refresh || *tree || *copyParam {
+		if *listAll || *searchMode || *refresh || *tree || *copyParam {
 			fmt.Fprintf(os.Stderr, "Error: -w cannot be used with other flags\n")
 			os.Exit(1)
 		}
 	}
 
-	// Show help if no command specified
-	if !*listAll && !*search && !*refresh && !*tree && !*copyParam && !*writeParam && !*getParam {
-		flag.Usage()
-		os.Exit(0)
+	// With no command, go interactive when attached to a terminal
+	if !*listAll && !*searchMode && !*refresh && !*tree && !*copyParam && !*writeParam && !*getParam {
+		if !*interactive && !(isTerminal(os.Stdin) && isTerminal(os.Stderr)) {
+			flag.Usage()
+			os.Exit(0)
+		}
+		*interactive = true
+	} else if *interactive {
+		fmt.Fprintf(os.Stderr, "Error: -i cannot be used with other commands\n")
+		os.Exit(1)
 	}
 
 	// Setup context with signal handling
@@ -153,6 +163,13 @@ func main() {
 	var params []ssm.Parameter
 
 	switch {
+	case *interactive:
+		err = runInteractive(ctx, client, strings.Join(searchTerms, " "), *path, *refresh, *decrypt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	case *getParam:
 		sp := spinner.Start("Fetching " + searchTerms[0])
 		params, err := client.GetParameters(ctx, []string{searchTerms[0]}, *decrypt)
@@ -185,15 +202,15 @@ func main() {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	case *tree && !*search:
+	case *tree && !*searchMode:
 		params, err = listNames(ctx, client, *path)
-	case *listAll && *search:
+	case *listAll && *searchMode:
 		params, err = searchKeysOnly(ctx, client, searchTerms, *path, *refresh)
 	case *listAll:
 		params, err = listNames(ctx, client, *path)
-	case *tree && *search:
+	case *tree && *searchMode:
 		params, err = searchKeysOnly(ctx, client, searchTerms, *path, *refresh)
-	case *search:
+	case *searchMode:
 		params, err = searchWithCache(ctx, client, searchTerms, *path, *refresh, *decrypt)
 	case *refresh:
 		err = refreshCache(ctx, client)
@@ -435,7 +452,7 @@ func refreshCache(ctx context.Context, client ssm.Client) error {
 		return err
 	}
 
-	keys, err := fetchAllKeys(ctx, client, sp)
+	keys, err := fetchAllKeys(ctx, client, sp.Update)
 	if err != nil {
 		return err
 	}
@@ -454,59 +471,12 @@ func searchWithCache(ctx context.Context, client ssm.Client, terms []string, pat
 	sp := spinner.Start("Resolving AWS account...")
 	defer sp.Stop()
 
-	// Get account ID for cache file
-	accountID, err := client.GetAccountID(ctx)
+	keys, err := loadKeys(ctx, client, refresh, sp.Update)
 	if err != nil {
 		return nil, err
 	}
 
-	// Initialize cache
-	c, err := cache.New()
-	if err != nil {
-		return nil, err
-	}
-
-	var keys []string
-
-	// Refresh: delete existing cache
-	if refresh {
-		if err := c.Remove(accountID); err != nil {
-			return nil, err
-		}
-	}
-
-	// Load from cache or fetch from AWS
-	if !refresh && c.Exists(accountID) {
-		keys, err = c.Load(accountID)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		keys, err = fetchAllKeys(ctx, client, sp)
-		if err != nil {
-			return nil, err
-		}
-
-		// Save to cache
-		if err := c.Save(accountID, keys); err != nil {
-			return nil, err
-		}
-	}
-
-	// Filter by path prefix
-	if pathPrefix != "/" {
-		var prefixedKeys []string
-		for _, k := range keys {
-			if strings.HasPrefix(k, pathPrefix) {
-				prefixedKeys = append(prefixedKeys, k)
-			}
-		}
-		keys = prefixedKeys
-	}
-
-	// Filter keys by search terms
-	matchedKeys := fuzzyFilterKeys(keys, terms)
-
+	matchedKeys := search.Filter(search.ByPrefix(keys, pathPrefix), terms)
 	if len(matchedKeys) == 0 {
 		return nil, nil
 	}
@@ -516,16 +486,81 @@ func searchWithCache(ctx context.Context, client ssm.Client, terms []string, pat
 	return client.GetParameters(ctx, matchedKeys, decrypt)
 }
 
-// fetchAllKeys lists every parameter name in the account, reporting progress on sp.
-func fetchAllKeys(ctx context.Context, client ssm.Client, sp *spinner.Spinner) ([]string, error) {
+// loadKeys returns all parameter names for the current account, from the
+// local cache when present (and refresh is false), otherwise from AWS.
+func loadKeys(ctx context.Context, client ssm.Client, refresh bool, progress func(string)) ([]string, error) {
+	progress("Resolving AWS account...")
+	accountID, err := client.GetAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	c, err := cache.New()
+	if err != nil {
+		return nil, err
+	}
+
+	if refresh {
+		if err := c.Remove(accountID); err != nil {
+			return nil, err
+		}
+	} else if c.Exists(accountID) {
+		return c.Load(accountID)
+	}
+
+	keys, err := fetchAllKeys(ctx, client, progress)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Save(accountID, keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// runInteractive launches the TUI and prints the chosen parameter's value.
+func runInteractive(ctx context.Context, client ssm.Client, query, pathPrefix string, refresh, decrypt bool) error {
+	p, err := tui.Run(ctx, tui.Options{
+		Client:  client,
+		Prefix:  pathPrefix,
+		Query:   query,
+		Decrypt: decrypt,
+		Load: func(ctx context.Context, forceRefresh bool, progress func(string)) ([]string, error) {
+			keys, err := loadKeys(ctx, client, refresh || forceRefresh, progress)
+			refresh = false // -r applies to the initial load only
+			return keys, err
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if p != nil {
+		fmt.Print(p.Value)
+		if isTerminal(os.Stdout) {
+			fmt.Println()
+		}
+	}
+	return nil
+}
+
+func isTerminal(f *os.File) bool {
+	stat, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return stat.Mode()&os.ModeCharDevice != 0
+}
+
+// fetchAllKeys lists every parameter name in the account, reporting progress.
+func fetchAllKeys(ctx context.Context, client ssm.Client, progress func(string)) ([]string, error) {
 	const msg = "Fetching parameter names..."
-	sp.Update(msg)
+	progress(msg)
 	allParams, err := client.ListParameters(ctx, ssm.ListOptions{
 		Path:      "/",
 		Recursive: true,
 		Decrypt:   false, // Don't decrypt, we only need names
 		Progress: func(n int) {
-			sp.Update(fmt.Sprintf("%s %d", msg, n))
+			progress(fmt.Sprintf("%s %d", msg, n))
 		},
 	})
 	if err != nil {
@@ -558,94 +593,18 @@ func searchKeysOnly(ctx context.Context, client ssm.Client, terms []string, path
 	sp := spinner.Start("Resolving AWS account...")
 	defer sp.Stop()
 
-	// Get account ID for cache file
-	accountID, err := client.GetAccountID(ctx)
+	keys, err := loadKeys(ctx, client, refresh, sp.Update)
 	if err != nil {
 		return nil, err
 	}
-
-	// Initialize cache
-	c, err := cache.New()
-	if err != nil {
-		return nil, err
-	}
-
-	var keys []string
-
-	// Refresh: delete existing cache
-	if refresh {
-		if err := c.Remove(accountID); err != nil {
-			return nil, err
-		}
-	}
-
-	// Load from cache or fetch from AWS
-	if !refresh && c.Exists(accountID) {
-		keys, err = c.Load(accountID)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		keys, err = fetchAllKeys(ctx, client, sp)
-		if err != nil {
-			return nil, err
-		}
-
-		// Save to cache
-		if err := c.Save(accountID, keys); err != nil {
-			return nil, err
-		}
-	}
-
-	// Filter by path prefix
-	if pathPrefix != "/" {
-		var prefixedKeys []string
-		for _, k := range keys {
-			if strings.HasPrefix(k, pathPrefix) {
-				prefixedKeys = append(prefixedKeys, k)
-			}
-		}
-		keys = prefixedKeys
-	}
-
-	// Filter keys by search terms
-	matchedKeys := fuzzyFilterKeys(keys, terms)
 
 	// Return as Parameters with only Name set (no value fetch)
+	matchedKeys := search.Filter(search.ByPrefix(keys, pathPrefix), terms)
 	params := make([]ssm.Parameter, len(matchedKeys))
 	for i, k := range matchedKeys {
 		params[i] = ssm.Parameter{Name: k}
 	}
 	return params, nil
-}
-
-// fuzzyFilterKeys filters parameter keys by fuzzy matching.
-// All patterns must match (AND logic).
-func fuzzyFilterKeys(keys []string, patterns []string) []string {
-	var result []string
-
-	for _, key := range keys {
-		name := strings.ToLower(key)
-
-		allMatch := true
-		for _, pattern := range patterns {
-			pattern = strings.ToLower(pattern)
-			if !fuzzyMatch(name, pattern) {
-				allMatch = false
-				break
-			}
-		}
-		if allMatch {
-			result = append(result, key)
-		}
-	}
-
-	return result
-}
-
-// fuzzyMatch checks if text contains the pattern as a substring.
-func fuzzyMatch(text, pattern string) bool {
-	return pattern == "" || strings.Contains(text, pattern)
 }
 
 // reorderArgs moves flags before positional arguments to work around
