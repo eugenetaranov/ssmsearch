@@ -129,7 +129,7 @@ func main() {
 
 	// With no command, go interactive when attached to a terminal
 	if !*listAll && !*searchMode && !*refresh && !*tree && !*copyParam && !*writeParam && !*getParam {
-		if !*interactive && !(isTerminal(os.Stdin) && isTerminal(os.Stderr)) {
+		if !*interactive && (!isTerminal(os.Stdin) || !isTerminal(os.Stderr)) {
 			flag.Usage()
 			os.Exit(0)
 		}
@@ -386,7 +386,7 @@ func writeParameter(ctx context.Context, client ssm.Client, path, valueArg strin
 			if err != nil {
 				return fmt.Errorf("cannot open terminal: %w", err)
 			}
-			defer tty.Close()
+			defer func() { _ = tty.Close() }()
 
 			fmt.Printf("Enter value for %s (%s) — press Ctrl+D when done:\n", path, paramType)
 			value, err := io.ReadAll(tty)
@@ -407,7 +407,7 @@ func writeParameter(ctx context.Context, client ssm.Client, path, valueArg strin
 		if err != nil {
 			return fmt.Errorf("cannot open terminal for confirmation: %w", err)
 		}
-		defer tty.Close()
+		defer func() { _ = tty.Close() }()
 
 		fmt.Printf("Write to %s (%s)? [y/N] ", path, paramType)
 		reader := bufio.NewReader(tty)

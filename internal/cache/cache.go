@@ -41,7 +41,7 @@ func (c *Cache) Load(accountID string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open cache file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var keys []string
 	scanner := bufio.NewScanner(f)
@@ -67,7 +67,7 @@ func (c *Cache) Save(accountID string, keys []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create cache file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	w := bufio.NewWriter(f)
 	for _, key := range keys {
