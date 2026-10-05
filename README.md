@@ -18,14 +18,15 @@ go install github.com/eugenetaranov/ssmsearch/cmd/ssmsearch@latest
 ## Usage
 
 ```bash
-# Interactive search (TUI): live filter, value preview, enter prints the value
-ssmsearch
-ssmsearch prod db          # start with a filter
-ssmsearch -i -p /app/      # only keys under /app/
-value=$(ssmsearch prod db) # UI draws on stderr, chosen value goes to stdout
+# Search parameters: prints "name value" for every match (all terms must match)
+ssmsearch prod database host
+ssmsearch prod database | grep -i password
 
-# Search parameters (fuzzy match, all terms must match)
-ssmsearch -s prod database host
+# Interactive search (TUI): live filter, value preview, enter prints the value
+ssmsearch -i
+ssmsearch -i prod db          # start with a filter
+ssmsearch -i -p /app/         # only keys under /app/
+value=$(ssmsearch -i prod db) # UI draws on stderr, chosen value goes to stdout
 
 # List all parameter names
 ssmsearch -l
@@ -56,7 +57,7 @@ ssmsearch -s -r term   # refresh and search
 
 | Flag | Description |
 |------|-------------|
-| `-i` | Interactive search (default with no flags in a terminal) |
+| `-i` | Interactive search UI |
 | `-s` | Search mode - terms as positional args |
 | `-l` | List parameter names only (no values) |
 | `-t` | Display as tree |

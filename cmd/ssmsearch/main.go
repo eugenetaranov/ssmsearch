@@ -27,7 +27,7 @@ var (
 func main() {
 	// Simple CLI flags
 	listAll := flag.Bool("l", false, "list all SSM parameters")
-	interactive := flag.Bool("i", false, "interactive search (default when run with no flags in a terminal)")
+	interactive := flag.Bool("i", false, "interactive search UI: -i [terms]")
 	searchMode := flag.Bool("s", false, "search mode - terms as positional args")
 	refresh := flag.Bool("r", false, "refresh cache (use with -s)")
 	tree := flag.Bool("t", false, "display output as tree")
@@ -46,7 +46,8 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "ssmsearch - AWS SSM Parameter Store CLI\n\n")
 		fmt.Fprintf(os.Stderr, "Usage:\n")
-		fmt.Fprintf(os.Stderr, "  ssmsearch [terms]         Interactive search (also -i)\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch term1 term2     Search parameters matching all terms (same as -s)\n")
+		fmt.Fprintf(os.Stderr, "  ssmsearch -i [terms]      Interactive search UI\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -l              List all parameters\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -l -p /app/     List parameters under /app/\n")
 		fmt.Fprintf(os.Stderr, "  ssmsearch -s term1 term2  Search parameters matching all terms\n")
@@ -127,16 +128,19 @@ func main() {
 		}
 	}
 
-	// With no command, go interactive when attached to a terminal
-	if !*listAll && !*searchMode && !*refresh && !*tree && !*copyParam && !*writeParam && !*getParam {
-		if !*interactive && (!isTerminal(os.Stdin) || !isTerminal(os.Stderr)) {
-			flag.Usage()
-			os.Exit(0)
+	noCommand := !*listAll && !*searchMode && !*tree && !*copyParam && !*writeParam && !*getParam
+	switch {
+	case *interactive:
+		if !noCommand {
+			fmt.Fprintf(os.Stderr, "Error: -i cannot be used with other commands\n")
+			os.Exit(1)
 		}
-		*interactive = true
-	} else if *interactive {
-		fmt.Fprintf(os.Stderr, "Error: -i cannot be used with other commands\n")
-		os.Exit(1)
+	case noCommand && len(searchTerms) > 0:
+		// Bare terms search, same as -s (with -r: refresh, then search)
+		*searchMode = true
+	case noCommand && !*refresh:
+		flag.Usage()
+		os.Exit(0)
 	}
 
 	// Setup context with signal handling
